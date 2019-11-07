@@ -14,10 +14,12 @@ class Seq2SeqDataset(Dataset):
         with open(src_file, 'rb') as f:
             self.src_dataset = pickle.load(f)
             self.src_sizes = np.array([len(tokens) for tokens in self.src_dataset])
+            self.src_sizes =  torch.from_numpy(self.src_sizes)
 
         with open(tgt_file, 'rb') as f:
             self.tgt_dataset = pickle.load(f)
             self.tgt_sizes = np.array([len(tokens) for tokens in self.tgt_dataset])
+            self.tgt_sizes =  torch.from_numpy(self.tgt_sizes)
 
     def __getitem__(self, index):
         return {
@@ -101,6 +103,7 @@ class BatchSampler(Sampler):
             batch.append(idx)
             sample_len = max(sample_len, self.dataset.tgt_sizes[idx])
             num_tokens = len(batch) * sample_len
+            num_tokens = num_tokens.to(float)
             if len(batch) == self.batch_size or num_tokens > self.max_tokens:
                 batches.append(batch)
                 batch, sample_len = [], 0
