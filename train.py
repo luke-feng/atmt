@@ -24,7 +24,7 @@ def get_args():
     parser.add_argument('--source-lang', default='de', help='source language')
     parser.add_argument('--target-lang', default='en', help='target language')
     parser.add_argument('--max-tokens', default=None, type=int, help='maximum number of tokens in a batch')
-    parser.add_argument('--batch-size', default=100, type=int, help='maximum number of sentences in a batch')
+    parser.add_argument('--batch-size', default=10, type=int, help='maximum number of sentences in a batch')
     parser.add_argument('--train-on-tiny', action='store_true', help='train model on a tiny dataset')
 
     # Add model arguments
@@ -112,55 +112,59 @@ def main(args):
         stats['grad_norm'] = 0
         stats['clip'] = 0
         # Display progress
-        progress_bar = tqdm(train_loader, desc='| Epoch {:03d}'.format(epoch), leave=False, disable=False)
+        try:
+            with tqdm(train_loader, desc='| Epoch {:03d}'.format(epoch), leave=False, disable=False) as progress_bar:
+                # Iterate over the training set
+                for i, sample in enumerate(progress_bar):
+                    if args.cuda:
+                        sample = utils.move_to_cuda(sample)
+                    if len(sample) == 0:
+                        continue
+                    model.train()
 
-        # Iterate over the training set
-        for i, sample in enumerate(progress_bar):
-            if args.cuda:
-                sample = utils.move_to_cuda(sample)
-            if len(sample) == 0:
-                continue
-            model.train()
+                    output, _ = model(sample['src_tokens'], sample['src_lengths'], sample['tgt_inputs'])
+                    loss = \
+                        criterion(output.view(-1, output.size(-1)), sample['tgt_tokens'].view(-1)) / len(sample['src_lengths'])
+                    loss.backward()
+                    grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_norm)
+                    optimizer.step()
+                    optimizer.zero_grad()
 
-            output, _ = model(sample['src_tokens'], sample['src_lengths'], sample['tgt_inputs'])
-            loss = \
-                criterion(output.view(-1, output.size(-1)), sample['tgt_tokens'].view(-1)) / len(sample['src_lengths'])
-            loss.backward()
-            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_norm)
-            optimizer.step()
-            optimizer.zero_grad()
+                    # Update statistics for progress bar
+                    total_loss, num_tokens, batch_size = loss.item(), sample['num_tokens'], len(sample['src_tokens'])
+                    stats['loss'] += total_loss * len(sample['src_lengths']) / sample['num_tokens']
+                    stats['lr'] += optimizer.param_groups[0]['lr']
+                    stats['num_tokens'] += num_tokens / len(sample['src_tokens'])
+                    stats['batch_size'] += batch_size
+                    stats['grad_norm'] += grad_norm
+                    stats['clip'] += 1 if grad_norm > args.clip_norm else 0
+                    progress_bar.set_postfix({key: '{:.4g}'.format(value / (i + 1)) for key, value in stats.items()},
+                                             refresh=True)
 
-            # Update statistics for progress bar
-            total_loss, num_tokens, batch_size = loss.item(), sample['num_tokens'], len(sample['src_tokens'])
-            stats['loss'] += total_loss * len(sample['src_lengths']) / sample['num_tokens']
-            stats['lr'] += optimizer.param_groups[0]['lr']
-            stats['num_tokens'] += num_tokens / len(sample['src_tokens'])
-            stats['batch_size'] += batch_size
-            stats['grad_norm'] += grad_norm
-            stats['clip'] += 1 if grad_norm > args.clip_norm else 0
-            progress_bar.set_postfix({key: '{:.4g}'.format(value / (i + 1)) for key, value in stats.items()},
-                                     refresh=True)
+                logging.info('Epoch {:03d}: {}'.format(epoch, ' | '.join(key + ' {:.4g}'.format(
+                    value / len(progress_bar)) for key, value in stats.items())))
 
-        logging.info('Epoch {:03d}: {}'.format(epoch, ' | '.join(key + ' {:.4g}'.format(
-            value / len(progress_bar)) for key, value in stats.items())))
+                # Calculate validation loss
+                valid_perplexity = validate(args, model, criterion, valid_dataset, epoch)
+                model.train()
 
-        # Calculate validation loss
-        valid_perplexity = validate(args, model, criterion, valid_dataset, epoch)
-        model.train()
+                # Save checkpoints
+                if epoch % args.save_interval == 0:
+                    utils.save_checkpoint(args, model, optimizer, epoch, valid_perplexity)  # lr_scheduler
 
-        # Save checkpoints
-        if epoch % args.save_interval == 0:
-            utils.save_checkpoint(args, model, optimizer, epoch, valid_perplexity)  # lr_scheduler
-
-        # Check whether to terminate training
-        if valid_perplexity < best_validate:
-            best_validate = valid_perplexity
-            bad_epochs = 0
-        else:
-            bad_epochs += 1
-        if bad_epochs >= args.patience:
-            logging.info('No validation set improvements observed for {:d} epochs. Early stop!'.format(args.patience))
-            break
+                # Check whether to terminate training
+                if valid_perplexity < best_validate:
+                    best_validate = valid_perplexity
+                    bad_epochs = 0
+                else:
+                    bad_epochs += 1
+                if bad_epochs >= args.patience:
+                    logging.info('No validation set improvements observed for {:d} epochs. Early stop!'.format(args.patience))
+                    break
+        except KeyboardInterrupt:
+            progress_bar.close()
+            raise
+        progress_bar.close()
 
 
 def validate(args, model, criterion, valid_dataset, epoch):
