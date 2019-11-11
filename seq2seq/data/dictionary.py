@@ -66,15 +66,19 @@ class Dictionary(object):
         self.word2idx, self.words, self.counts = word2idx, words, counts
 
     @classmethod
-    def load(cls, filename):
+    def load(cls, filename, max_dict_number):
         """Loads the dictionary from a text file"""
         with open(filename, encoding='utf-8') as f:
             dictionary = cls()
+            i = 0
             for line in f.readlines():
                 word, count = line.rstrip().rsplit(' ', 1)
                 dictionary.word2idx[word] = len(dictionary.words)
                 dictionary.words.append(word)
                 dictionary.counts.append(int(count))
+                i += 1
+                if i == max_dict_number - 3:
+                    break
             return dictionary
 
     def save(self, file):
